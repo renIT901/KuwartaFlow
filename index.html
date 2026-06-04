@@ -93,7 +93,8 @@
   .acct{background:var(--card);border:1px solid var(--line);border-radius:14px;margin:10px 0;padding:13px 15px;box-shadow:0 2px 10px var(--shadow)}
   .acct .ah{display:flex;align-items:center;gap:9px}
   .acct .dot{width:11px;height:11px;border-radius:50%}
-  .acct .an{font-family:var(--disp);font-weight:600;font-size:17px;flex:1}
+  .acct .an{font-family:var(--disp);font-weight:600;font-size:17px;flex:1;border:none;background:transparent;color:var(--ink);padding:2px 0;min-width:0}
+  .acct .an:focus{outline:none;border-bottom:1.5px solid var(--accent)}
   .acct .bal{display:flex;align-items:center;gap:3px;font-family:var(--mono);font-weight:600;font-size:17px}
   .acct .bal input{width:96px;text-align:right;font-family:var(--mono);font-weight:600;font-size:17px;
     border:none;border-bottom:1.5px solid var(--line);background:transparent;color:var(--ink);padding:2px 0}
@@ -240,7 +241,7 @@ const METHODS=[
   {name:'Card',a:['card','credit','debit','visa'],c:'#555'},
   {name:'Bank',a:['bank','bpi','bdo','unionbank','seabank'],c:'#9A5B2E'},
 ];
-const ACCOUNTS=['GoTyme','GCash','Cash','Maya'];
+const DEFAULT_ACCOUNTS=['GoTyme','GCash','Cash','Maya'];
 const XFER=/\b(transfer|transferred|withdraw|withdrawal|withdrew|cashout|cash[\s-]?out)\b/i;
 const peso=n=>'₱'+Math.round(n||0).toLocaleString('en-US');
 const uid=()=>Math.random().toString(36).slice(2,9);
@@ -267,7 +268,7 @@ function computeDay(raw){const o={entries:[],exp:0,xfer:0};
     if(p.kind==='exp')o.exp+=p.amt;else if(p.kind==='xfer')o.xfer+=p.amt;});return o;}
 
 /* ---------- state ---------- */
-let state={v:2,days:[],budget:null,balances:{}};
+let state={v:2,days:[],budget:null,balances:{},accounts:[...DEFAULT_ACCOUNTS]};
 let sel=todayISO().slice(0,7), bmode='method', tab='log';
 const STORE=(window.storage&&window.storage.get)
   ?{get:async k=>{try{const r=await window.storage.get(k);return r&&r.value?r.value:null;}catch(e){return null;}},
@@ -275,7 +276,7 @@ const STORE=(window.storage&&window.storage.get)
   :{get:async k=>{try{return localStorage.getItem(k);}catch(e){return null;}},
      set:async(k,v)=>{try{localStorage.setItem(k,v);}catch(e){}}};
 
-const SEED={v:2,budget:12000,balances:{},days:[
+const SEED={v:2,budget:12000,balances:{},accounts:[...DEFAULT_ACCOUNTS],days:[
   {id:uid(),date:'2026-06-01',raw:'40 pedicab cash #transport\n140 p2p to work cash #transport\n141 bfast and lunch cash #food\n40 sandwich cash #food\n80 uv cash #transport'},
   {id:uid(),date:'2026-06-02',raw:'111 load gcash #bills\n80 belgian gcash #food\n80 uv cash #transport\n600 movie gotyme #fun\n160 buko gotyme #food\n600 withdraw gotyme to cash'},
   {id:uid(),date:'2026-06-03',raw:'1000 gt transfer to gcash\n173 grab to bb gcash #transport\n134 grab to robinsons gcash #transport\n26 lrt cash #transport\n200 massage cash #wellness\n110 coffee gcash #food'},
@@ -285,7 +286,7 @@ async function load(){
   let parsed=null;
   try{const r=await STORE.get(KEY);parsed=r?JSON.parse(r):null;}catch(e){}
   if(Array.isArray(parsed))parsed={v:2,days:parsed,budget:null,balances:{}};            // migrate v1
-  if(parsed&&parsed.days){state={v:2,days:parsed.days,budget:parsed.budget??null,balances:parsed.balances||{}};}
+  if(parsed&&parsed.days){state={v:2,days:parsed.days,budget:parsed.budget??null,balances:parsed.balances||{},accounts:parsed.accounts||[...DEFAULT_ACCOUNTS]};}
   else{state=JSON.parse(JSON.stringify(SEED));save();}
   const ms=state.days.map(d=>d.date.slice(0,7)).sort();
   if(ms.length&&!ms.includes(sel))sel=ms[ms.length-1];
@@ -372,19 +373,33 @@ document.getElementById('addDay').onclick=()=>{const today=todayISO();
   const t=document.querySelector('#days textarea');if(t)t.focus();};
 
 /* ---------- BALANCES ---------- */
-function netWorth(){return ACCOUNTS.reduce((s,a)=>{const v=state.balances[a];return s+(typeof v==='number'?v:0);},0);}
+function netWorth(){return state.accounts.reduce((s,a)=>{const v=state.balances[a];return s+(typeof v==='number'?v:0);},0);}
 function updateNet(){document.getElementById('netWorth').textContent=peso(netWorth());}
 function renderBalances(){updateNet();const host=document.getElementById('accts');host.innerHTML='';
-  const{byM,xfer}=monthStats(sel);
-  ACCOUNTS.forEach(a=>{const card=document.createElement('div');card.className='acct';
+  const{byM}=monthStats(sel);
+  state.accounts.forEach((a,i)=>{const card=document.createElement('div');card.className='acct';
     const cur=state.balances[a];
     card.innerHTML=`<div class="ah"><span class="dot" style="background:${colorOf(a)}"></span>
-        <span class="an">${a}</span>
-        <span class="bal">₱<input type="number" inputmode="decimal" placeholder="—" value="${cur!=null?cur:''}"></span></div>
+        <input class="an" type="text" value="${esc(a)}" placeholder="Account name">
+        <span class="bal">₱<input type="number" inputmode="decimal" placeholder="—" value="${cur!=null?cur:''}"></span>
+        <button class="del" title="Remove account">✕</button></div>
       <div class="sub"><span>Spent this month</span><span>${peso(byM[a]||0)}</span></div>`;
-    const inp=card.querySelector('input');
-    inp.addEventListener('input',()=>{const v=parseFloat(inp.value);state.balances[a]=isNaN(v)?null:v;updateNet();save();});
-    host.appendChild(card);});}
+    const nameInp=card.querySelector('.an');
+    const balInp=card.querySelector('.bal input');
+    balInp.addEventListener('input',()=>{const v=parseFloat(balInp.value);state.balances[a]=isNaN(v)?null:v;updateNet();save();});
+    nameInp.addEventListener('change',()=>{const newName=nameInp.value.trim();
+      if(!newName){nameInp.value=a||'';if(!a){state.accounts.splice(i,1);renderBalances();save();}return;}
+      if(newName===a)return;
+      const oldBal=state.balances[a];delete state.balances[a];
+      if(oldBal!=null)state.balances[newName]=oldBal;
+      state.accounts[i]=newName;renderBalances();save();});
+    card.querySelector('.del').addEventListener('click',()=>askConfirm(`Remove account "${a}"?`,()=>{
+      delete state.balances[a];state.accounts.splice(i,1);renderBalances();save();}));
+    host.appendChild(card);});
+  const addBtn=document.createElement('button');addBtn.className='add';addBtn.textContent='+ Add account';
+  addBtn.onclick=()=>{state.accounts.push('');save();renderBalances();
+    const inputs=document.querySelectorAll('#accts .acct .an');const last=inputs[inputs.length-1];if(last)last.focus();};
+  host.appendChild(addBtn);}
 
 /* ---------- HISTORY ---------- */
 function renderHistory(){const months={};
@@ -455,7 +470,7 @@ document.getElementById('impDo').onclick=()=>{const msg=document.getElementById(
   try{data=JSON.parse(document.getElementById('impIn').value);}catch(e){msg.textContent='That isn\u2019t valid backup data.';return;}
   if(!data||!Array.isArray(data.days)){msg.textContent='Backup is missing entries.';return;}
   askConfirm('Replace ALL current data with this backup?',()=>{
-    state={v:2,days:data.days,budget:data.budget??null,balances:data.balances||{}};
+    state={v:2,days:data.days,budget:data.budget??null,balances:data.balances||{},accounts:data.accounts||[...DEFAULT_ACCOUNTS]};
     const ms=state.days.map(d=>d.date.slice(0,7)).sort();if(ms.length)sel=ms[ms.length-1];
     save();document.getElementById('impSheet').classList.remove('show');showTab('log');});};
 
