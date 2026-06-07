@@ -58,6 +58,10 @@
   .chips{display:flex;flex-wrap:wrap;gap:6px;margin-top:8px}
   .chip{font-family:var(--mono);font-size:11px;padding:4px 9px;border-radius:999px;background:var(--paper2);border:1px solid var(--line);display:flex;gap:6px;align-items:center}
   .chip b{font-weight:600}.chip i{width:7px;height:7px;border-radius:50%;display:inline-block}
+  .tagbar{display:flex;align-items:flex-start;gap:8px;margin-top:10px}
+  .tagrow{display:flex;align-items:center;gap:10px;padding:10px 2px;border-top:1px dashed var(--line)}
+  .tagrow:first-child{border-top:none}
+  .tagrow .tg{flex-shrink:0}
 
   .day{background:var(--card);border:1px solid var(--line);border-radius:14px;margin:12px 0;box-shadow:0 2px 10px var(--shadow);overflow:hidden}
   .day .top{display:flex;align-items:center;gap:8px;padding:11px 13px 8px;border-bottom:1px dashed var(--line)}
@@ -150,7 +154,7 @@
     <header>
       <div class="topbar"><h1>Spendings</h1><button class="iconbtn" id="expBtn">↗ Export</button></div>
       <div class="nav"><button id="prevM">‹</button><div class="mlabel" id="mlabel"></div><button id="nextM">›</button></div>
-      <div class="gauge">
+      <div class="gauge" id="mainGauge">
         <div class="grow">
           <div><div class="lbl">Spent</div><div class="big" id="gSpent">₱0</div></div>
           <div class="capwrap"><div class="lbl">Monthly budget</div>
@@ -159,11 +163,24 @@
         <div class="gbar"><div class="gfill" id="gFill"></div></div>
         <div class="gmeta"><span id="gLeft"></span><span id="gXfer"></span></div>
       </div>
+      <div class="gauge" id="tagGauge" style="display:none">
+        <div class="grow">
+          <div><div class="lbl" id="tgLbl">#tag spent</div><div class="big" id="tgSpent">₱0</div></div>
+          <div class="capwrap"><div class="lbl">Monthly limit</div>
+            <div class="capedit">₱<input id="tagCapInput" type="number" inputmode="decimal" min="0" placeholder="—"></div></div>
+        </div>
+        <div class="gbar"><div class="gfill" id="tgFill"></div></div>
+        <div class="gmeta"><span id="tgLeft"></span></div>
+      </div>
     </header>
     <div class="breakdown">
       <div class="bars" id="bars"></div>
       <div class="seg" id="seg"><button data-mode="method" class="on">By method</button><button data-mode="tag">By tag</button></div>
       <div class="chips" id="chips"></div>
+    </div>
+    <div class="tagbar">
+      <div class="chips" id="tagFilters" style="margin-top:0;flex:1"></div>
+      <button class="iconbtn" id="tagMgmtBtn" title="Manage tags">⚙ Tags</button>
     </div>
     <div id="days"></div>
     <button class="add" id="addDay">+ Add a day</button>
@@ -212,6 +229,16 @@
       <button class="ghost" id="dlBtn">Download</button>
       <button class="ghost" id="expClose">Close</button>
     </div>
+  </div>
+</div>
+
+<!-- MANAGE TAGS SHEET -->
+<div class="sheet-bg" id="tagSheet">
+  <div class="sheet">
+    <h2>Manage tags</h2>
+    <div id="tagMgmtList"></div>
+    <div class="hint" style="margin:10px 2px 0;text-align:left">Excluded tags stay out of your main spending total and budget gauge — they're still fully tracked, just tap their chip in the filter bar to see them.</div>
+    <div class="row" style="margin-top:12px"><button class="ghost" id="tagSheetClose" style="width:100%">Close</button></div>
   </div>
 </div>
 
@@ -280,8 +307,8 @@ function computeDay(raw){const o={entries:[],exp:0,xfer:0};
     if(p.kind==='exp')o.exp+=p.amt;else if(p.kind==='xfer')o.xfer+=p.amt;});return o;}
 
 /* ---------- state ---------- */
-let state={v:3,days:[],budget:null,accounts:[]};
-let sel=todayISO().slice(0,7), bmode='method', tab='log';
+let state={v:4,days:[],budget:null,accounts:[],tags:[]};
+let sel=todayISO().slice(0,7), bmode='method', tab='log', tagFilter=null;
 const STORE=(window.storage&&window.storage.get)
   ?{get:async k=>{try{const r=await window.storage.get(k);return r&&r.value?r.value:null;}catch(e){return null;}},
      set:async(k,v)=>{try{await window.storage.set(k,v);}catch(e){}}}
@@ -310,8 +337,22 @@ function normalizeAccounts(rawAccounts,rawBalances){
       color:a.color||randomColor(),balance:typeof a.balance==='number'?a.balance:null}));
   return migrateLegacyAccounts(arr,rawBalances);
 }
+/* tag settings: a sparse list — only tags with non-default exclude/limit are stored */
+function normalizeTags(raw){
+  if(!Array.isArray(raw))return [];
+  return raw.map(t=>({name:String((t&&t.name)||'').toLowerCase(),
+    excluded:!!(t&&t.excluded),limit:(t&&typeof t.limit==='number')?t.limit:null}))
+    .filter(t=>t.name);
+}
+function tagSettings(name){return state.tags.find(t=>t.name===name)||{name,excluded:false,limit:null};}
+function setTagSetting(name,patch){
+  let t=state.tags.find(x=>x.name===name);
+  if(!t){t={name,excluded:false,limit:null};state.tags.push(t);}
+  Object.assign(t,patch);
+  if(!t.excluded&&t.limit==null)state.tags=state.tags.filter(x=>x!==t);
+}
 
-const SEED={v:3,budget:12000,accounts:freshAccounts(),days:[
+const SEED={v:4,budget:12000,accounts:freshAccounts(),tags:[],days:[
   {id:uid(),date:'2026-06-01',raw:'40 pedicab cash #transport\n140 p2p to work cash #transport\n141 bfast and lunch cash #food\n40 sandwich cash #food\n80 uv cash #transport'},
   {id:uid(),date:'2026-06-02',raw:'111 load gcash #bills\n80 belgian gcash #food\n80 uv cash #transport\n600 movie gotyme #fun\n160 buko gotyme #food\n600 withdraw gotyme to cash'},
   {id:uid(),date:'2026-06-03',raw:'1000 gt transfer to gcash\n173 grab to bb gcash #transport\n134 grab to robinsons gcash #transport\n26 lrt cash #transport\n200 massage cash #wellness\n110 coffee gcash #food'},
@@ -322,8 +363,9 @@ async function load(){
   try{const r=await STORE.get(KEY);parsed=r?JSON.parse(r):null;}catch(e){}
   if(Array.isArray(parsed))parsed={v:2,days:parsed,budget:null,balances:{}};            // migrate v1
   if(parsed&&parsed.days){
-    state={v:3,days:parsed.days,budget:parsed.budget??null,accounts:normalizeAccounts(parsed.accounts,parsed.balances)};
-    if(parsed.v<3)save();                                                               // persist migrated shape
+    state={v:4,days:parsed.days,budget:parsed.budget??null,
+      accounts:normalizeAccounts(parsed.accounts,parsed.balances),tags:normalizeTags(parsed.tags)};
+    if(parsed.v<4)save();                                                               // persist migrated shape
   }
   else{state=JSON.parse(JSON.stringify(SEED));save();}
   const ms=state.days.map(d=>d.date.slice(0,7)).sort();
@@ -340,22 +382,64 @@ const fmtMonth=ym=>{const d=new Date(ym+'-01T00:00:00');return d.toLocaleDateStr
 const monthDays=ym=>{const[y,m]=ym.split('-').map(Number);return new Date(y,m,0).getDate();};
 function monthEntries(ym){const out=[];state.days.filter(d=>d.date.slice(0,7)===ym).forEach(d=>{
   computeDay(d.raw).entries.forEach(e=>out.push({...e,date:d.date}));});return out;}
-function monthStats(ym){const e=monthEntries(ym);let exp=0,xfer=0;const byM={},byT={},perDay={};
+function monthStats(ym){const e=monthEntries(ym);let exp=0,xfer=0,mainExp=0;const byM={},byT={},perDay={};
   e.forEach(x=>{if(x.kind==='exp'){exp+=x.amt;const mk=x.method?x.method.name:'Untagged';byM[mk]=(byM[mk]||0)+x.amt;
       (x.tags.length?x.tags:['untagged']).forEach(t=>byT[t]=(byT[t]||0)+x.amt);
-      const dn=+x.date.slice(8,10);perDay[dn]=(perDay[dn]||0)+x.amt;}
+      const dn=+x.date.slice(8,10);perDay[dn]=(perDay[dn]||0)+x.amt;
+      if(!x.tags.some(t=>tagSettings(t).excluded))mainExp+=x.amt;}
     else if(x.kind==='xfer')xfer+=x.amt;});
-  return {exp,xfer,byM,byT,perDay};}
+  return {exp,xfer,mainExp,byM,byT,perDay};}
 
 /* ---------- LOG ---------- */
-function updateGauge(){const{exp,xfer}=monthStats(sel);const cap=state.budget;
-  document.getElementById('gSpent').textContent=peso(exp);
-  document.getElementById('gXfer').textContent='Transfers '+peso(xfer);
-  const fill=document.getElementById('gFill'),left=document.getElementById('gLeft');
-  if(cap&&cap>0){const pct=exp/cap;fill.style.width=Math.min(100,pct*100)+'%';
-    fill.style.background=pct<.75?'var(--good)':pct<1?'var(--amber)':'var(--accent)';
-    left.textContent=exp<=cap?peso(cap-exp)+' left of '+peso(cap):peso(exp-cap)+' over budget';}
-  else{fill.style.width='0%';left.textContent='Set a monthly budget →';}}
+function updateGauge(){const s=monthStats(sel);
+  const mg=document.getElementById('mainGauge'),tg=document.getElementById('tagGauge');
+  if(tagFilter){
+    mg.style.display='none';tg.style.display='';
+    const total=s.byT[tagFilter]||0,ts=tagSettings(tagFilter),cap=ts.limit;
+    document.getElementById('tgLbl').textContent='#'+tagFilter+' spent';
+    document.getElementById('tgSpent').textContent=peso(total);
+    const fill=document.getElementById('tgFill'),left=document.getElementById('tgLeft');
+    if(cap&&cap>0){const pct=total/cap;fill.style.width=Math.min(100,pct*100)+'%';
+      fill.style.background=pct<.75?'var(--good)':pct<1?'var(--amber)':'var(--accent)';
+      left.textContent=total<=cap?peso(cap-total)+' left of '+peso(cap):peso(total-cap)+' over limit';}
+    else{fill.style.width='0%';left.textContent='Set a monthly limit →';}
+  }else{
+    mg.style.display='';tg.style.display='none';
+    const exp=s.mainExp,cap=state.budget;
+    document.getElementById('gSpent').textContent=peso(exp);
+    document.getElementById('gXfer').textContent='Transfers '+peso(s.xfer);
+    const fill=document.getElementById('gFill'),left=document.getElementById('gLeft');
+    if(cap&&cap>0){const pct=exp/cap;fill.style.width=Math.min(100,pct*100)+'%';
+      fill.style.background=pct<.75?'var(--good)':pct<1?'var(--amber)':'var(--accent)';
+      left.textContent=exp<=cap?peso(cap-exp)+' left of '+peso(cap):peso(exp-cap)+' over budget';}
+    else{fill.style.width='0%';left.textContent='Set a monthly budget →';}
+  }}
+function renderTagFilters(){const s=monthStats(sel);
+  const host=document.getElementById('tagFilters');host.innerHTML='';
+  const all=document.createElement('button');all.className='pill'+(tagFilter===null?' on':'');all.textContent='All';
+  all.onclick=()=>{tagFilter=null;renderLog();};host.appendChild(all);
+  const entries=Object.entries(s.byT).filter(([t])=>t!=='untagged');
+  if(tagFilter&&!entries.some(([t])=>t===tagFilter))entries.push([tagFilter,0]);
+  entries.sort((a,b)=>b[1]-a[1]).forEach(([t,v])=>{const b=document.createElement('button');
+    b.className='pill'+(tagFilter===t?' on':'');b.textContent='#'+t;
+    b.onclick=()=>{tagFilter=(tagFilter===t?null:t);renderLog();};host.appendChild(b);});}
+function renderFilteredDays(t){const host=document.getElementById('days');host.innerHTML='';
+  const list=state.days.filter(d=>d.date.slice(0,7)===sel)
+    .map(d=>({day:d,entries:computeDay(d.raw).entries.filter(e=>e.kind==='exp'&&(e.tags||[]).includes(t))}))
+    .filter(x=>x.entries.length).sort((a,b)=>b.day.date.localeCompare(a.day.date));
+  if(!list.length){host.innerHTML=`<div class="empty">No #${esc(t)} entries for ${esc(fmtMonth(sel))}.</div>`;return;}
+  list.forEach(({day,entries})=>{const card=document.createElement('div');card.className='day';
+    const tot=entries.reduce((s,e)=>s+e.amt,0);
+    card.innerHTML=`<div class="top"><input class="date" type="text" value="${esc(fmtDate(day.date))}" readonly>
+        <div class="dtot"><div class="v">${peso(tot)}</div><div class="l">spent</div></div></div>
+      <div class="entries"></div>`;
+    const box=card.querySelector('.entries');
+    entries.forEach(e=>{const row=document.createElement('div');row.className='ent';
+      let pills=`<span class="mt" style="background:${e.method?e.method.color:'#b0a48f'}">${e.method?e.method.name:'tag?'}</span>`;
+      (e.tags||[]).forEach(tg=>pills+=`<span class="tg">#${esc(tg)}</span>`);
+      row.innerHTML=`<span class="amt">${peso(e.amt)}</span><span class="it">${esc(e.item)}</span>${pills}`;
+      box.appendChild(row);});
+    host.appendChild(card);});}
 function renderBars(){const{perDay}=monthStats(sel);const nd=monthDays(sel);
   const mx=Math.max(1,...Object.values(perDay),0);const today=todayISO();
   const bars=document.getElementById('bars');bars.innerHTML='';
@@ -397,13 +481,19 @@ function renderDays(){const host=document.getElementById('days');host.innerHTML=
     host.appendChild(card);autoGrow(ta);refresh();});}
 function renderLog(){document.getElementById('mlabel').textContent=fmtMonth(sel);
   const ci=document.getElementById('capInput');ci.value=state.budget!=null?state.budget:'';
-  logDerived();renderDays();}
+  if(tagFilter){const ts=tagSettings(tagFilter);
+    document.getElementById('tagCapInput').value=ts.limit!=null?ts.limit:'';}
+  logDerived();renderTagFilters();
+  if(tagFilter){renderFilteredDays(tagFilter);document.getElementById('addDay').style.display='none';}
+  else{renderDays();document.getElementById('addDay').style.display='';}}
 
 document.getElementById('capInput').addEventListener('input',e=>{const v=parseFloat(e.target.value);
   state.budget=isNaN(v)?null:v;updateGauge();save();});
+document.getElementById('tagCapInput').addEventListener('input',e=>{if(!tagFilter)return;
+  const v=parseFloat(e.target.value);setTagSetting(tagFilter,{limit:isNaN(v)?null:v});updateGauge();save();});
 document.getElementById('prevM').onclick=()=>shiftMonth(-1);
 document.getElementById('nextM').onclick=()=>shiftMonth(1);
-function shiftMonth(n){let[y,m]=sel.split('-').map(Number);m+=n;while(m<1){m+=12;y--;}while(m>12){m-=12;y++;}sel=y+'-'+String(m).padStart(2,'0');renderLog();}
+function shiftMonth(n){let[y,m]=sel.split('-').map(Number);m+=n;while(m<1){m+=12;y--;}while(m>12){m-=12;y++;}sel=y+'-'+String(m).padStart(2,'0');tagFilter=null;renderLog();}
 document.getElementById('seg').addEventListener('click',e=>{const b=e.target.closest('button');if(!b)return;
   bmode=b.dataset.mode;[...e.currentTarget.children].forEach(x=>x.classList.toggle('on',x===b));renderChips();});
 document.getElementById('addDay').onclick=()=>{const today=todayISO();
@@ -452,9 +542,27 @@ function renderHistory(){const months={};
   if(!keys.length){host.innerHTML='<div class="empty">Nothing logged yet.</div>';return;}
   keys.forEach(k=>{const row=document.createElement('div');row.className='hrow';
     row.innerHTML=`<span class="hm">${esc(fmtMonth(k))}</span><span class="hv">${peso(months[k].exp)}</span><span class="hd">${months[k].n} day${months[k].n>1?'s':''}</span>`;
-    row.onclick=()=>{sel=k;renderLog();showTab('log');};host.appendChild(row);});}
+    row.onclick=()=>{sel=k;tagFilter=null;renderLog();showTab('log');};host.appendChild(row);});}
 document.getElementById('resetBtn').onclick=()=>askConfirm('Erase ALL months, balances and budget? This cannot be undone.',()=>{
-  state=JSON.parse(JSON.stringify(SEED));sel='2026-06';save();renderLog();renderBalances();renderHistory();});
+  state=JSON.parse(JSON.stringify(SEED));sel='2026-06';tagFilter=null;save();renderLog();renderBalances();renderHistory();});
+
+/* ---------- TAG MANAGEMENT ---------- */
+function allTagNames(){const set=new Set();
+  state.days.forEach(d=>computeDay(d.raw).entries.forEach(e=>{if(e.kind==='exp')(e.tags||[]).forEach(t=>set.add(t));}));
+  state.tags.forEach(t=>set.add(t.name));
+  return [...set].sort();}
+function renderTagMgmt(){const host=document.getElementById('tagMgmtList');host.innerHTML='';
+  const names=allTagNames();
+  if(!names.length){host.innerHTML='<div class="empty">No tags yet — add some with <code>#tagname</code> in your entries.</div>';return;}
+  names.forEach(name=>{const ts=tagSettings(name);
+    const row=document.createElement('div');row.className='tagrow';
+    row.innerHTML=`<span class="tg">#${esc(name)}</span><button class="pill${ts.excluded?' on':''}" style="margin-left:auto">Exclude from total</button>`;
+    row.querySelector('button').addEventListener('click',()=>{
+      setTagSetting(name,{excluded:!tagSettings(name).excluded});
+      logDerived();renderTagMgmt();save();});
+    host.appendChild(row);});}
+document.getElementById('tagMgmtBtn').onclick=()=>{renderTagMgmt();document.getElementById('tagSheet').classList.add('show');};
+document.getElementById('tagSheetClose').onclick=()=>document.getElementById('tagSheet').classList.remove('show');
 
 /* ---------- tabs ---------- */
 function showTab(name){tab=name;
@@ -475,7 +583,7 @@ document.getElementById('confirmNo').onclick=()=>{document.getElementById('confi
 let expScope='month',expFmt='notes';
 function buildExport(){const src=expScope==='month'?state.days.filter(d=>d.date.slice(0,7)===sel):state.days;
   const sorted=[...src].sort((a,b)=>a.date.localeCompare(b.date));
-  if(expFmt==='json'){return JSON.stringify(expScope==='month'?{v:3,days:sorted,budget:state.budget,accounts:state.accounts}:state,null,2);}
+  if(expFmt==='json'){return JSON.stringify(expScope==='month'?{v:4,days:sorted,budget:state.budget,accounts:state.accounts,tags:state.tags}:state,null,2);}
   if(expFmt==='csv'){let out='date,amount,item,method,type,tags\n';
     sorted.forEach(d=>computeDay(d.raw).entries.forEach(e=>{if(e.kind==='note')return;
       const it=`"${(e.item||'').replace(/"/g,'""')}"`;
@@ -512,9 +620,9 @@ document.getElementById('impDo').onclick=()=>{const msg=document.getElementById(
   try{data=JSON.parse(document.getElementById('impIn').value);}catch(e){msg.textContent='That isn\u2019t valid backup data.';return;}
   if(!data||!Array.isArray(data.days)){msg.textContent='Backup is missing entries.';return;}
   askConfirm('Replace ALL current data with this backup?',()=>{
-    state={v:3,days:data.days,budget:data.budget??null,accounts:normalizeAccounts(data.accounts,data.balances)};
+    state={v:4,days:data.days,budget:data.budget??null,accounts:normalizeAccounts(data.accounts,data.balances),tags:normalizeTags(data.tags)};
     const ms=state.days.map(d=>d.date.slice(0,7)).sort();if(ms.length)sel=ms[ms.length-1];
-    save();document.getElementById('impSheet').classList.remove('show');showTab('log');});};
+    tagFilter=null;save();document.getElementById('impSheet').classList.remove('show');showTab('log');});};
 
 /* ---------- PWA ---------- */
 if(navigator.storage&&navigator.storage.persist)navigator.storage.persist().catch(()=>{});
