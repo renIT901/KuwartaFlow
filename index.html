@@ -92,7 +92,14 @@
   .net .big{font-family:var(--mono);font-weight:600;font-size:30px;margin-top:4px}
   .acct{background:var(--card);border:1px solid var(--line);border-radius:14px;margin:10px 0;padding:13px 15px;box-shadow:0 2px 10px var(--shadow)}
   .acct .ah{display:flex;align-items:center;gap:9px}
-  .acct .dot{width:11px;height:11px;border-radius:50%}
+  .acct .dot{width:20px;height:20px;padding:0;border:1px solid var(--line);border-radius:50%;cursor:pointer;background:none;-webkit-appearance:none;appearance:none;flex-shrink:0}
+  .acct .dot::-webkit-color-swatch-wrapper{padding:0;border-radius:50%}
+  .acct .dot::-webkit-color-swatch{border:none;border-radius:50%}
+  .acct .dot::-moz-color-swatch{border:none;border-radius:50%}
+  .acct .kw{display:flex;align-items:center;gap:8px;margin-top:8px}
+  .acct .kwl{font-family:var(--mono);font-size:9.5px;text-transform:uppercase;letter-spacing:.12em;color:var(--ink-soft);white-space:nowrap}
+  .acct .kwi{flex:1;min-width:0;border:none;border-bottom:1.5px solid var(--line);background:transparent;font-family:var(--mono);font-size:12.5px;color:var(--ink);padding:3px 0}
+  .acct .kwi:focus{outline:none;border-color:var(--accent)}
   .acct .an{font-family:var(--disp);font-weight:600;font-size:17px;flex:1;border:none;background:transparent;color:var(--ink);padding:2px 0;min-width:0}
   .acct .an:focus{outline:none;border-bottom:1.5px solid var(--accent)}
   .acct .bal{display:flex;align-items:center;gap:3px;font-family:var(--mono);font-weight:600;font-size:17px}
@@ -233,23 +240,28 @@
 
 <script>
 const KEY='expenses:state';
-const METHODS=[
-  {name:'Cash',a:['cash'],c:'#7A6A58'},
-  {name:'GCash',a:['gcash','g-cash'],c:'#1E6FD9'},
-  {name:'GoTyme',a:['gotyme','gt','go-tyme'],c:'#5B3FB0'},
-  {name:'Maya',a:['maya','paymaya'],c:'#1FA37A'},
-  {name:'Card',a:['card','credit','debit','visa'],c:'#555'},
-  {name:'Bank',a:['bank','bpi','bdo','unionbank','seabank'],c:'#9A5B2E'},
-];
-const DEFAULT_ACCOUNTS=['GoTyme','GCash','Cash','Maya'];
 const XFER=/\b(transfer|transferred|withdraw|withdrawal|withdrew|cashout|cash[\s-]?out)\b/i;
 const peso=n=>'₱'+Math.round(n||0).toLocaleString('en-US');
 const uid=()=>Math.random().toString(36).slice(2,9);
 const cl=t=>(t||'').replace(/[.,;:]+$/,'').toLowerCase();
 const esc=s=>(s||'').replace(/[&<>]/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[m]));
-const colorOf=n=>{const m=METHODS.find(x=>x.name===n);return m?m.c:'#b0a48f';};
 const todayISO=()=>{const d=new Date();return new Date(d.getTime()-d.getTimezoneOffset()*60000).toISOString().slice(0,10);};
-function methodFor(t){t=cl(t);for(const m of METHODS)if(m.a.includes(t))return m;return null;}
+
+/* accounts are the single source of truth for balances AND for the Log's
+   payment-method detection + pill colors */
+const BUILTIN_METHODS=[
+  {name:'Cash',keywords:['cash'],color:'#7A6A58'},
+  {name:'GCash',keywords:['gcash','g-cash'],color:'#1E6FD9'},
+  {name:'GoTyme',keywords:['gotyme','gt','go-tyme'],color:'#5B3FB0'},
+  {name:'Maya',keywords:['maya','paymaya'],color:'#1FA37A'},
+  {name:'Card',keywords:['card','credit','debit','visa'],color:'#555'},
+  {name:'Bank',keywords:['bank','bpi','bdo','unionbank','seabank'],color:'#9A5B2E'},
+];
+const PALETTE=['#7A6A58','#1E6FD9','#5B3FB0','#1FA37A','#555','#9A5B2E','#B6452A','#C2851A','#3E7A5E','#5C6B3F'];
+const randomColor=()=>PALETTE[Math.floor(Math.random()*PALETTE.length)];
+const freshAccounts=()=>BUILTIN_METHODS.map(m=>({id:uid(),name:m.name,keywords:[...m.keywords],color:m.color,balance:null}));
+function colorOf(name){const a=state.accounts.find(x=>x.name===name);return a?a.color:'#b0a48f';}
+function methodFor(t){t=cl(t);for(const a of state.accounts)if((a.keywords||[]).includes(t))return a;return null;}
 
 function parseLine(line){
   const raw=line.trim(); if(!raw)return null;
@@ -268,7 +280,7 @@ function computeDay(raw){const o={entries:[],exp:0,xfer:0};
     if(p.kind==='exp')o.exp+=p.amt;else if(p.kind==='xfer')o.xfer+=p.amt;});return o;}
 
 /* ---------- state ---------- */
-let state={v:2,days:[],budget:null,balances:{},accounts:[...DEFAULT_ACCOUNTS]};
+let state={v:3,days:[],budget:null,accounts:[]};
 let sel=todayISO().slice(0,7), bmode='method', tab='log';
 const STORE=(window.storage&&window.storage.get)
   ?{get:async k=>{try{const r=await window.storage.get(k);return r&&r.value?r.value:null;}catch(e){return null;}},
@@ -276,7 +288,30 @@ const STORE=(window.storage&&window.storage.get)
   :{get:async k=>{try{return localStorage.getItem(k);}catch(e){return null;}},
      set:async(k,v)=>{try{localStorage.setItem(k,v);}catch(e){}}};
 
-const SEED={v:2,budget:12000,balances:{},accounts:[...DEFAULT_ACCOUNTS],days:[
+/* turn pre-v3 data (string account names + a separate balances map, or no
+   accounts at all) into the unified account-object shape, preserving every
+   existing account, balance and the built-in methods so parsing/colors don't change */
+function migrateLegacyAccounts(names,balances){
+  balances=balances||{};
+  const seedByName={};BUILTIN_METHODS.forEach(m=>seedByName[m.name.toLowerCase()]=m);
+  const used=new Set();
+  const accounts=(names||[]).map(name=>{const key=String(name).toLowerCase();used.add(key);const seed=seedByName[key];
+    return {id:uid(),name:String(name),keywords:seed?[...seed.keywords]:[key],color:seed?seed.color:randomColor(),
+      balance:(balances[name]!=null)?balances[name]:null};});
+  BUILTIN_METHODS.forEach(seed=>{if(!used.has(seed.name.toLowerCase()))
+    accounts.push({id:uid(),name:seed.name,keywords:[...seed.keywords],color:seed.color,balance:null});});
+  return accounts;
+}
+function normalizeAccounts(rawAccounts,rawBalances){
+  const arr=Array.isArray(rawAccounts)?rawAccounts:[];
+  if(arr.length&&typeof arr[0]==='object'&&arr[0])
+    return arr.map(a=>({id:a.id||uid(),name:a.name||'',
+      keywords:Array.isArray(a.keywords)?a.keywords.map(k=>String(k).toLowerCase()):[],
+      color:a.color||randomColor(),balance:typeof a.balance==='number'?a.balance:null}));
+  return migrateLegacyAccounts(arr,rawBalances);
+}
+
+const SEED={v:3,budget:12000,accounts:freshAccounts(),days:[
   {id:uid(),date:'2026-06-01',raw:'40 pedicab cash #transport\n140 p2p to work cash #transport\n141 bfast and lunch cash #food\n40 sandwich cash #food\n80 uv cash #transport'},
   {id:uid(),date:'2026-06-02',raw:'111 load gcash #bills\n80 belgian gcash #food\n80 uv cash #transport\n600 movie gotyme #fun\n160 buko gotyme #food\n600 withdraw gotyme to cash'},
   {id:uid(),date:'2026-06-03',raw:'1000 gt transfer to gcash\n173 grab to bb gcash #transport\n134 grab to robinsons gcash #transport\n26 lrt cash #transport\n200 massage cash #wellness\n110 coffee gcash #food'},
@@ -286,7 +321,10 @@ async function load(){
   let parsed=null;
   try{const r=await STORE.get(KEY);parsed=r?JSON.parse(r):null;}catch(e){}
   if(Array.isArray(parsed))parsed={v:2,days:parsed,budget:null,balances:{}};            // migrate v1
-  if(parsed&&parsed.days){state={v:2,days:parsed.days,budget:parsed.budget??null,balances:parsed.balances||{},accounts:parsed.accounts||[...DEFAULT_ACCOUNTS]};}
+  if(parsed&&parsed.days){
+    state={v:3,days:parsed.days,budget:parsed.budget??null,accounts:normalizeAccounts(parsed.accounts,parsed.balances)};
+    if(parsed.v<3)save();                                                               // persist migrated shape
+  }
   else{state=JSON.parse(JSON.stringify(SEED));save();}
   const ms=state.days.map(d=>d.date.slice(0,7)).sort();
   if(ms.length&&!ms.includes(sel))sel=ms[ms.length-1];
@@ -335,7 +373,7 @@ function renderEntries(box,raw){const c=computeDay(raw);box.innerHTML='';
   c.entries.forEach(e=>{const row=document.createElement('div');row.className='ent'+(e.kind==='xfer'?' xfer':'');
     if(e.kind==='note'){row.innerHTML=`<span class="amt"></span><span class="it note">${esc(e.text)}</span>`;}
     else{let pills=e.kind==='xfer'?`<span class="xtag">transfer</span>`
-        :`<span class="mt" style="background:${e.method?e.method.c:'#b0a48f'}">${e.method?e.method.name:'tag?'}</span>`;
+        :`<span class="mt" style="background:${e.method?e.method.color:'#b0a48f'}">${e.method?e.method.name:'tag?'}</span>`;
       (e.tags||[]).forEach(t=>pills+=`<span class="tg">#${esc(t)}</span>`);
       row.innerHTML=`<span class="amt">${peso(e.amt)}</span><span class="it">${esc(e.item)}</span>${pills}`;}
     box.appendChild(row);});return c;}
@@ -373,31 +411,35 @@ document.getElementById('addDay').onclick=()=>{const today=todayISO();
   const t=document.querySelector('#days textarea');if(t)t.focus();};
 
 /* ---------- BALANCES ---------- */
-function netWorth(){return state.accounts.reduce((s,a)=>{const v=state.balances[a];return s+(typeof v==='number'?v:0);},0);}
+function netWorth(){return state.accounts.reduce((s,a)=>s+(typeof a.balance==='number'?a.balance:0),0);}
 function updateNet(){document.getElementById('netWorth').textContent=peso(netWorth());}
 function renderBalances(){updateNet();const host=document.getElementById('accts');host.innerHTML='';
   const{byM}=monthStats(sel);
   state.accounts.forEach((a,i)=>{const card=document.createElement('div');card.className='acct';
-    const cur=state.balances[a];
-    card.innerHTML=`<div class="ah"><span class="dot" style="background:${colorOf(a)}"></span>
-        <input class="an" type="text" value="${esc(a)}" placeholder="Account name">
-        <span class="bal">₱<input type="number" inputmode="decimal" placeholder="—" value="${cur!=null?cur:''}"></span>
+    card.innerHTML=`<div class="ah">
+        <input class="dot" type="color" value="${a.color}" title="Account color">
+        <input class="an" type="text" value="${esc(a.name)}" placeholder="Account name">
+        <span class="bal">₱<input type="number" inputmode="decimal" placeholder="—" value="${a.balance!=null?a.balance:''}"></span>
         <button class="del" title="Remove account">✕</button></div>
-      <div class="sub"><span>Spent this month</span><span>${peso(byM[a]||0)}</span></div>`;
+      <div class="kw"><span class="kwl">matches</span><input class="kwi" type="text" value="${esc((a.keywords||[]).join(', '))}" placeholder="e.g. cash, efectivo"></div>
+      <div class="sub"><span>Spent this month</span><span>${peso(byM[a.name]||0)}</span></div>`;
+    const dot=card.querySelector('.dot');
     const nameInp=card.querySelector('.an');
     const balInp=card.querySelector('.bal input');
-    balInp.addEventListener('input',()=>{const v=parseFloat(balInp.value);state.balances[a]=isNaN(v)?null:v;updateNet();save();});
+    const kwInp=card.querySelector('.kwi');
+    dot.addEventListener('input',()=>{a.color=dot.value;logDerived();renderDays();save();});
+    balInp.addEventListener('input',()=>{const v=parseFloat(balInp.value);a.balance=isNaN(v)?null:v;updateNet();save();});
     nameInp.addEventListener('change',()=>{const newName=nameInp.value.trim();
-      if(!newName){nameInp.value=a||'';if(!a){state.accounts.splice(i,1);renderBalances();save();}return;}
-      if(newName===a)return;
-      const oldBal=state.balances[a];delete state.balances[a];
-      if(oldBal!=null)state.balances[newName]=oldBal;
-      state.accounts[i]=newName;renderBalances();save();});
-    card.querySelector('.del').addEventListener('click',()=>askConfirm(`Remove account "${a}"?`,()=>{
-      delete state.balances[a];state.accounts.splice(i,1);renderBalances();save();}));
+      if(!newName){nameInp.value=a.name||'';if(!a.name){state.accounts.splice(i,1);renderBalances();save();}return;}
+      a.name=newName;renderBalances();save();});
+    kwInp.addEventListener('change',()=>{
+      a.keywords=kwInp.value.split(/[,\s]+/).map(s=>s.trim().toLowerCase()).filter(Boolean);
+      kwInp.value=a.keywords.join(', ');logDerived();renderDays();save();});
+    card.querySelector('.del').addEventListener('click',()=>askConfirm(`Remove account "${a.name||'(unnamed)'}"?`,()=>{
+      state.accounts.splice(i,1);renderBalances();save();}));
     host.appendChild(card);});
   const addBtn=document.createElement('button');addBtn.className='add';addBtn.textContent='+ Add account';
-  addBtn.onclick=()=>{state.accounts.push('');save();renderBalances();
+  addBtn.onclick=()=>{state.accounts.push({id:uid(),name:'',keywords:[],color:randomColor(),balance:null});save();renderBalances();
     const inputs=document.querySelectorAll('#accts .acct .an');const last=inputs[inputs.length-1];if(last)last.focus();};
   host.appendChild(addBtn);}
 
@@ -433,7 +475,7 @@ document.getElementById('confirmNo').onclick=()=>{document.getElementById('confi
 let expScope='month',expFmt='notes';
 function buildExport(){const src=expScope==='month'?state.days.filter(d=>d.date.slice(0,7)===sel):state.days;
   const sorted=[...src].sort((a,b)=>a.date.localeCompare(b.date));
-  if(expFmt==='json'){return JSON.stringify(expScope==='month'?{v:2,days:sorted,budget:state.budget,balances:state.balances}:state,null,2);}
+  if(expFmt==='json'){return JSON.stringify(expScope==='month'?{v:3,days:sorted,budget:state.budget,accounts:state.accounts}:state,null,2);}
   if(expFmt==='csv'){let out='date,amount,item,method,type,tags\n';
     sorted.forEach(d=>computeDay(d.raw).entries.forEach(e=>{if(e.kind==='note')return;
       const it=`"${(e.item||'').replace(/"/g,'""')}"`;
@@ -470,7 +512,7 @@ document.getElementById('impDo').onclick=()=>{const msg=document.getElementById(
   try{data=JSON.parse(document.getElementById('impIn').value);}catch(e){msg.textContent='That isn\u2019t valid backup data.';return;}
   if(!data||!Array.isArray(data.days)){msg.textContent='Backup is missing entries.';return;}
   askConfirm('Replace ALL current data with this backup?',()=>{
-    state={v:2,days:data.days,budget:data.budget??null,balances:data.balances||{},accounts:data.accounts||[...DEFAULT_ACCOUNTS]};
+    state={v:3,days:data.days,budget:data.budget??null,accounts:normalizeAccounts(data.accounts,data.balances)};
     const ms=state.days.map(d=>d.date.slice(0,7)).sort();if(ms.length)sel=ms[ms.length-1];
     save();document.getElementById('impSheet').classList.remove('show');showTab('log');});};
 
