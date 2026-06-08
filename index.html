@@ -112,6 +112,19 @@
   .acct .bal input:focus{outline:none;border-color:var(--accent)}
   .acct .sub{font-family:var(--mono);font-size:11px;color:var(--ink-soft);margin-top:7px;display:flex;justify-content:space-between}
 
+  /* recurring */
+  .rrule{background:var(--card);border:1px solid var(--line);border-radius:14px;margin:10px 0;padding:13px 15px;box-shadow:0 2px 10px var(--shadow)}
+  .rrule .rh{display:flex;align-items:center;gap:9px}
+  .rrule .rn{font-family:var(--disp);font-weight:600;font-size:17px;flex:1;border:none;background:transparent;color:var(--ink);padding:2px 0;min-width:0}
+  .rrule .rn:focus{outline:none;border-bottom:1.5px solid var(--accent)}
+  .rrule .rmeta{display:flex;flex-wrap:wrap;align-items:center;gap:8px 14px;margin-top:9px;font-family:var(--mono);font-size:11.5px;color:var(--ink-soft)}
+  .rrule .rmeta input,.rrule .rmeta select{font-family:var(--mono);font-size:12.5px;color:var(--ink);border:none;border-bottom:1.5px solid var(--line);background:transparent;padding:3px 2px;margin-left:4px}
+  .rrule .rmeta input:focus,.rrule .rmeta select:focus{outline:none;border-color:var(--accent)}
+  .rrule .ramt{width:60px;text-align:right}
+  .rrule .rday{width:34px;text-align:right}
+  .rrule .rtag{width:76px}
+  .rrule .racct{max-width:118px}
+
   /* history */
   .hrow{display:flex;align-items:center;padding:13px 4px;border-bottom:1px solid var(--line);cursor:pointer;background:var(--card);border-radius:10px;margin-bottom:6px;padding-left:13px;padding-right:13px;border:1px solid var(--line)}
   .hrow:hover{border-color:var(--accent)}
@@ -200,7 +213,8 @@
   <section class="view" id="view-history">
     <header><div class="topbar"><h1>History</h1></div></header>
     <div id="histList"></div>
-    <button class="ghost" id="importBtn" style="width:100%;margin-top:16px">Import backup</button>
+    <button class="ghost" id="recurMgmtBtn" style="width:100%;margin-top:16px">↻ Manage recurring</button>
+    <button class="ghost" id="importBtn" style="width:100%;margin-top:10px">Import backup</button>
     <button class="danger" id="resetBtn">Reset all data</button>
   </section>
 </div>
@@ -239,6 +253,16 @@
     <div id="tagMgmtList"></div>
     <div class="hint" style="margin:10px 2px 0;text-align:left">Excluded tags stay out of your main spending total and budget gauge — they're still fully tracked, just tap their chip in the filter bar to see them.</div>
     <div class="row" style="margin-top:12px"><button class="ghost" id="tagSheetClose" style="width:100%">Close</button></div>
+  </div>
+</div>
+
+<!-- MANAGE RECURRING SHEET -->
+<div class="sheet-bg" id="recurSheet">
+  <div class="sheet">
+    <h2>Recurring</h2>
+    <div id="recurList"></div>
+    <div class="hint" style="margin:10px 2px 0;text-align:left">On its day each month, a rule is auto-added as a normal line tagged <code>#auto</code> — fully editable or deletable, and it won't repeat for that month even if you change or remove it.</div>
+    <div class="row" style="margin-top:12px"><button class="ghost" id="recurSheetClose" style="width:100%">Close</button></div>
   </div>
 </div>
 
@@ -307,7 +331,7 @@ function computeDay(raw){const o={entries:[],exp:0,xfer:0};
     if(p.kind==='exp')o.exp+=p.amt;else if(p.kind==='xfer')o.xfer+=p.amt;});return o;}
 
 /* ---------- state ---------- */
-let state={v:4,days:[],budget:null,accounts:[],tags:[]};
+let state={v:4,days:[],budget:null,accounts:[],tags:[],recurring:[]};
 let sel=todayISO().slice(0,7), bmode='method', tab='log', tagFilter=null;
 const STORE=(window.storage&&window.storage.get)
   ?{get:async k=>{try{const r=await window.storage.get(k);return r&&r.value?r.value:null;}catch(e){return null;}},
@@ -351,8 +375,45 @@ function setTagSetting(name,patch){
   Object.assign(t,patch);
   if(!t.excluded&&t.limit==null)state.tags=state.tags.filter(x=>x!==t);
 }
+/* recurring rules: name + amount + account + tag + day-of-month, with a list of
+   months (YYYY-MM) it's already been auto-added for, so reopening the app or
+   editing/deleting the inserted line never causes a duplicate that month */
+function normalizeRecurring(raw){
+  if(!Array.isArray(raw))return [];
+  return raw.filter(r=>r&&typeof r==='object').map(r=>({
+    id:r.id||uid(),
+    name:String(r.name||''),
+    amount:typeof r.amount==='number'?r.amount:null,
+    accountId:r.accountId||null,
+    tag:(String(r.tag||'bills').toLowerCase().replace(/^#/,'').trim())||'bills',
+    day:(typeof r.day==='number'&&r.day>=1&&r.day<=31)?Math.round(r.day):1,
+    addedMonths:Array.isArray(r.addedMonths)?r.addedMonths.map(String):[]}));
+}
+/* on app open: insert any rule due this month that hasn't been added yet, as a
+   normal editable line (tagged #auto so it's visibly distinguishable), then mark
+   the rule+month as done so it never repeats even if the line is later edited/removed */
+function applyRecurring(){
+  const today=todayISO(),ym=today.slice(0,7),todayDay=+today.slice(8,10);
+  let changed=false;
+  state.recurring.forEach(rule=>{
+    if(!rule.name.trim()||typeof rule.amount!=='number'||rule.amount<=0)return;
+    if(rule.addedMonths.includes(ym))return;
+    const dueDay=Math.min(rule.day,monthDays(ym));
+    if(todayDay<dueDay)return;
+    const date=`${ym}-${String(dueDay).padStart(2,'0')}`;
+    let day=state.days.find(d=>d.date===date);
+    if(!day){day={id:uid(),date,raw:''};state.days.push(day);}
+    const acct=state.accounts.find(a=>a.id===rule.accountId);
+    const kw=acct?((acct.keywords&&acct.keywords[0])||acct.name.toLowerCase()):'';
+    const line=[rule.amount,rule.name.trim(),kw,'#'+rule.tag,'#auto'].filter(Boolean).join(' ');
+    day.raw=(day.raw?day.raw+'\n':'')+line;
+    rule.addedMonths.push(ym);
+    changed=true;
+  });
+  if(changed)save();
+}
 
-const SEED={v:4,budget:12000,accounts:freshAccounts(),tags:[],days:[
+const SEED={v:4,budget:12000,accounts:freshAccounts(),tags:[],recurring:[],days:[
   {id:uid(),date:'2026-06-01',raw:'40 pedicab cash #transport\n140 p2p to work cash #transport\n141 bfast and lunch cash #food\n40 sandwich cash #food\n80 uv cash #transport'},
   {id:uid(),date:'2026-06-02',raw:'111 load gcash #bills\n80 belgian gcash #food\n80 uv cash #transport\n600 movie gotyme #fun\n160 buko gotyme #food\n600 withdraw gotyme to cash'},
   {id:uid(),date:'2026-06-03',raw:'1000 gt transfer to gcash\n173 grab to bb gcash #transport\n134 grab to robinsons gcash #transport\n26 lrt cash #transport\n200 massage cash #wellness\n110 coffee gcash #food'},
@@ -364,10 +425,12 @@ async function load(){
   if(Array.isArray(parsed))parsed={v:2,days:parsed,budget:null,balances:{}};            // migrate v1
   if(parsed&&parsed.days){
     state={v:4,days:parsed.days,budget:parsed.budget??null,
-      accounts:normalizeAccounts(parsed.accounts,parsed.balances),tags:normalizeTags(parsed.tags)};
+      accounts:normalizeAccounts(parsed.accounts,parsed.balances),tags:normalizeTags(parsed.tags),
+      recurring:normalizeRecurring(parsed.recurring)};
     if(parsed.v<4)save();                                                               // persist migrated shape
   }
   else{state=JSON.parse(JSON.stringify(SEED));save();}
+  applyRecurring();
   const ms=state.days.map(d=>d.date.slice(0,7)).sort();
   if(ms.length&&!ms.includes(sel))sel=ms[ms.length-1];
 }
@@ -564,6 +627,37 @@ function renderTagMgmt(){const host=document.getElementById('tagMgmtList');host.
 document.getElementById('tagMgmtBtn').onclick=()=>{renderTagMgmt();document.getElementById('tagSheet').classList.add('show');};
 document.getElementById('tagSheetClose').onclick=()=>document.getElementById('tagSheet').classList.remove('show');
 
+/* ---------- RECURRING MANAGEMENT ---------- */
+function renderRecurMgmt(){const host=document.getElementById('recurList');host.innerHTML='';
+  if(!state.recurring.length)host.innerHTML='<div class="empty">No recurring items yet — add bills or subscriptions that repeat every month, like a Claude subscription on the 5th or gym dues on the 1st.</div>';
+  state.recurring.forEach((r,i)=>{const card=document.createElement('div');card.className='rrule';
+    const acctOpts=state.accounts.map(a=>`<option value="${a.id}"${a.id===r.accountId?' selected':''}>${esc(a.name||'(unnamed)')}</option>`).join('');
+    card.innerHTML=`<div class="rh">
+        <input class="rn" type="text" value="${esc(r.name)}" placeholder="e.g. Claude subscription">
+        <button class="del" title="Remove rule">✕</button></div>
+      <div class="rmeta">
+        <span>₱<input class="ramt" type="number" inputmode="decimal" min="0" value="${r.amount!=null?r.amount:''}" placeholder="0"></span>
+        <span>on day<input class="rday" type="number" min="1" max="31" value="${r.day}"></span>
+        <select class="racct"><option value="">No account</option>${acctOpts}</select>
+        <span>#<input class="rtag" type="text" value="${esc(r.tag)}" placeholder="bills"></span></div>`;
+    const nameInp=card.querySelector('.rn'),amtInp=card.querySelector('.ramt'),dayInp=card.querySelector('.rday'),
+      acctSel=card.querySelector('.racct'),tagInp=card.querySelector('.rtag');
+    nameInp.addEventListener('change',()=>{r.name=nameInp.value.trim();save();});
+    amtInp.addEventListener('input',()=>{const v=parseFloat(amtInp.value);r.amount=isNaN(v)?null:v;save();});
+    dayInp.addEventListener('change',()=>{let v=Math.round(parseFloat(dayInp.value));if(isNaN(v))v=1;
+      r.day=Math.min(31,Math.max(1,v));dayInp.value=r.day;save();});
+    acctSel.addEventListener('change',()=>{r.accountId=acctSel.value||null;save();});
+    tagInp.addEventListener('change',()=>{r.tag=(tagInp.value.trim().toLowerCase().replace(/^#/,''))||'bills';tagInp.value=r.tag;save();});
+    card.querySelector('.del').addEventListener('click',()=>askConfirm(`Remove recurring "${r.name||'(unnamed)'}"?`,()=>{
+      state.recurring.splice(i,1);renderRecurMgmt();save();}));
+    host.appendChild(card);});
+  const addBtn=document.createElement('button');addBtn.className='add';addBtn.textContent='+ Add recurring rule';
+  addBtn.onclick=()=>{state.recurring.push({id:uid(),name:'',amount:null,accountId:null,tag:'bills',day:1,addedMonths:[]});save();renderRecurMgmt();
+    const inputs=document.querySelectorAll('#recurList .rrule .rn');const last=inputs[inputs.length-1];if(last)last.focus();};
+  host.appendChild(addBtn);}
+document.getElementById('recurMgmtBtn').onclick=()=>{renderRecurMgmt();document.getElementById('recurSheet').classList.add('show');};
+document.getElementById('recurSheetClose').onclick=()=>document.getElementById('recurSheet').classList.remove('show');
+
 /* ---------- tabs ---------- */
 function showTab(name){tab=name;
   document.querySelectorAll('.view').forEach(v=>v.classList.toggle('on',v.id==='view-'+name));
@@ -583,7 +677,7 @@ document.getElementById('confirmNo').onclick=()=>{document.getElementById('confi
 let expScope='month',expFmt='notes';
 function buildExport(){const src=expScope==='month'?state.days.filter(d=>d.date.slice(0,7)===sel):state.days;
   const sorted=[...src].sort((a,b)=>a.date.localeCompare(b.date));
-  if(expFmt==='json'){return JSON.stringify(expScope==='month'?{v:4,days:sorted,budget:state.budget,accounts:state.accounts,tags:state.tags}:state,null,2);}
+  if(expFmt==='json'){return JSON.stringify(expScope==='month'?{v:4,days:sorted,budget:state.budget,accounts:state.accounts,tags:state.tags,recurring:state.recurring}:state,null,2);}
   if(expFmt==='csv'){let out='date,amount,item,method,type,tags\n';
     sorted.forEach(d=>computeDay(d.raw).entries.forEach(e=>{if(e.kind==='note')return;
       const it=`"${(e.item||'').replace(/"/g,'""')}"`;
@@ -620,7 +714,9 @@ document.getElementById('impDo').onclick=()=>{const msg=document.getElementById(
   try{data=JSON.parse(document.getElementById('impIn').value);}catch(e){msg.textContent='That isn\u2019t valid backup data.';return;}
   if(!data||!Array.isArray(data.days)){msg.textContent='Backup is missing entries.';return;}
   askConfirm('Replace ALL current data with this backup?',()=>{
-    state={v:4,days:data.days,budget:data.budget??null,accounts:normalizeAccounts(data.accounts,data.balances),tags:normalizeTags(data.tags)};
+    state={v:4,days:data.days,budget:data.budget??null,accounts:normalizeAccounts(data.accounts,data.balances),tags:normalizeTags(data.tags),
+      recurring:normalizeRecurring(data.recurring)};
+    applyRecurring();
     const ms=state.days.map(d=>d.date.slice(0,7)).sort();if(ms.length)sel=ms[ms.length-1];
     tagFilter=null;save();document.getElementById('impSheet').classList.remove('show');showTab('log');});};
 
