@@ -65,8 +65,10 @@
 
   .day{background:var(--card);border:1px solid var(--line);border-radius:14px;margin:12px 0;box-shadow:0 2px 10px var(--shadow);overflow:hidden}
   .day .top{display:flex;align-items:center;gap:8px;padding:11px 13px 8px;border-bottom:1px dashed var(--line)}
-  .day .date{font-family:var(--disp);font-weight:600;font-size:16px;border:none;background:transparent;color:var(--ink);width:160px;padding:2px 0}
-  .day .date:focus{outline:none;border-bottom:1.5px solid var(--accent)}
+  .day .date-wrap{position:relative;display:inline-flex;align-items:center;min-height:44px;min-width:160px;cursor:pointer}
+  .day .date-txt{font-family:var(--disp);font-weight:600;font-size:16px;color:var(--ink);pointer-events:none;user-select:none}
+  .day .date-inp{position:absolute;inset:0;width:100%;height:100%;opacity:0;cursor:pointer;border:none}
+  .day .date-wrap:focus-within .date-txt{border-bottom:1.5px solid var(--accent)}
   .day .dtot{margin-left:auto;text-align:right}
   .day .dtot .v{font-family:var(--mono);font-weight:600;font-size:17px;color:var(--accent)}
   .day .dtot .l{font-size:9px;letter-spacing:.12em;text-transform:uppercase;color:var(--ink-soft)}
@@ -160,6 +162,9 @@
   .save{position:fixed;left:50%;bottom:calc(var(--tabh) + env(safe-area-inset-bottom) + 14px);transform:translateX(-50%) translateY(20px);
     font-family:var(--mono);font-size:11px;background:var(--ink);color:var(--paper);padding:7px 14px;border-radius:999px;opacity:0;transition:.35s;pointer-events:none;z-index:60}
   .save.show{opacity:1;transform:translateX(-50%) translateY(0)}
+  .fab{position:fixed;right:18px;bottom:calc(var(--tabh) + env(safe-area-inset-bottom) + 14px);width:52px;height:52px;border-radius:50%;background:var(--accent);color:#fff;border:none;font-size:28px;line-height:1;cursor:pointer;z-index:25;box-shadow:0 4px 16px rgba(182,69,42,.40);display:flex;align-items:center;justify-content:center;transition:transform .12s;-webkit-tap-highlight-color:transparent}
+  .fab:active{transform:scale(.9)}
+  .fab.hidden{display:none}
 </style>
 
 <div class="wrap">
@@ -289,6 +294,7 @@
   </div>
 </div>
 
+<button class="fab hidden" id="fabAdd" aria-label="Add today">+</button>
 <div class="save" id="saveToast">saved ✓</div>
 
 <script>
@@ -553,7 +559,8 @@ function renderDays(){const host=document.getElementById('days');host.innerHTML=
   const list=state.days.filter(d=>d.date.slice(0,7)===sel).sort((a,b)=>b.date.localeCompare(a.date));
   if(!list.length){host.innerHTML=`<div class="empty">No entries for ${esc(fmtMonth(sel))} yet.<br>Tap “Add a day” to start.</div>`;return;}
   list.forEach(day=>{const card=document.createElement('div');card.className='day';
-    card.innerHTML=`<div class="top"><input class="date" type="text" value="${esc(fmtDate(day.date))}" readonly>
+    card.dataset.date=day.date;
+    card.innerHTML=`<div class="top"><div class="date-wrap"><span class="date-txt">${esc(fmtDate(day.date))}</span><input class="date-inp" type="date" value="${day.date}"></div>
         <div class="dtot"><div class="v" data-tot></div><div class="l">spent</div></div><button class="del">✕</button></div>
       <textarea spellcheck="false" placeholder="40 pedicab cash #tag">${esc(day.raw)}</textarea><div class="entries"></div>`;
     const ta=card.querySelector('textarea'),box=card.querySelector('.entries'),tot=card.querySelector('[data-tot]');
@@ -561,18 +568,16 @@ function renderDays(){const host=document.getElementById('days');host.innerHTML=
     ta.addEventListener('input',()=>{autoGrow(ta);day.raw=ta.value;refresh();logDerived();save();});
     card.querySelector('.del').addEventListener('click',()=>askConfirm('Remove '+fmtDate(day.date)+'?',()=>{
       state.days=state.days.filter(d=>d.id!==day.id);renderDays();logDerived();save();}));
-    const di=card.querySelector('.date');
-    di.addEventListener('click',()=>{di.removeAttribute('readonly');di.value=day.date;di.type='date';di.focus();});
-    di.addEventListener('change',()=>{if(di.value){day.date=di.value;sel=day.date.slice(0,7);renderLog();}});
-    di.addEventListener('blur',()=>{di.type='text';di.value=fmtDate(day.date);di.setAttribute('readonly','');save();});
+    const di=card.querySelector('.date-inp');
+    di.addEventListener('change',()=>{if(di.value){day.date=di.value;card.dataset.date=day.date;sel=day.date.slice(0,7);renderLog();save();}});
     host.appendChild(card);autoGrow(ta);refresh();});}
 function renderLog(){document.getElementById('mlabel').textContent=fmtMonth(sel);
   const ci=document.getElementById('capInput');ci.value=state.budget!=null?state.budget:'';
   if(tagFilter){const ts=tagSettings(tagFilter);
     document.getElementById('tagCapInput').value=ts.limit!=null?ts.limit:'';}
   logDerived();renderTagFilters();
-  if(tagFilter){renderFilteredDays(tagFilter);document.getElementById('addDay').style.display='none';}
-  else{renderDays();document.getElementById('addDay').style.display='';}}
+  if(tagFilter){renderFilteredDays(tagFilter);document.getElementById('addDay').style.display='none';document.getElementById('fabAdd').classList.add('hidden');}
+  else{renderDays();document.getElementById('addDay').style.display='';document.getElementById('fabAdd').classList.remove('hidden');}}
 
 document.getElementById('capInput').addEventListener('input',e=>{const v=parseFloat(e.target.value);
   state.budget=isNaN(v)?null:v;updateGauge();save();});
@@ -586,6 +591,19 @@ document.getElementById('seg').addEventListener('click',e=>{const b=e.target.clo
 document.getElementById('addDay').onclick=()=>{const today=todayISO();
   const date=today.slice(0,7)===sel?today:sel+'-01';state.days.push({id:uid(),date,raw:''});renderDays();logDerived();save();
   const t=document.querySelector('#days textarea');if(t)t.focus();};
+document.getElementById('fabAdd').onclick=()=>{
+  const today=todayISO(),todayYM=today.slice(0,7);
+  let needRender=false;
+  if(sel!==todayYM||tagFilter){sel=todayYM;tagFilter=null;needRender=true;}
+  if(!state.days.find(d=>d.date===today)){state.days.push({id:uid(),date:today,raw:''});needRender=true;save();}
+  if(needRender)renderLog();
+  requestAnimationFrame(()=>{
+    const card=document.querySelector(`#days [data-date="${today}"]`);if(!card)return;
+    const hdr=document.querySelector('#view-log header');
+    const y=card.getBoundingClientRect().top+window.scrollY-(hdr?hdr.offsetHeight:0)-8;
+    window.scrollTo({top:Math.max(0,y),behavior:'smooth'});
+    const ta=card.querySelector('textarea');if(ta)ta.focus();});
+};
 
 /* ---------- BALANCES ---------- */
 /* net income (in) minus spending (out) ever logged against this account, across
@@ -700,6 +718,7 @@ document.getElementById('recurSheetClose').onclick=()=>document.getElementById('
 function showTab(name){tab=name;
   document.querySelectorAll('.view').forEach(v=>v.classList.toggle('on',v.id==='view-'+name));
   document.querySelectorAll('.tabbar .t').forEach(b=>b.classList.toggle('on',b.dataset.tab===name));
+  if(name!=='log')document.getElementById('fabAdd').classList.add('hidden');
   if(name==='log')renderLog();else if(name==='balances')renderBalances();else renderHistory();
   window.scrollTo(0,0);}
 document.querySelectorAll('.tabbar .t').forEach(b=>b.onclick=()=>showTab(b.dataset.tab));
