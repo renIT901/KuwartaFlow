@@ -162,9 +162,20 @@
   .save{position:fixed;left:50%;bottom:calc(var(--tabh) + env(safe-area-inset-bottom) + 14px);transform:translateX(-50%) translateY(20px);
     font-family:var(--mono);font-size:11px;background:var(--ink);color:var(--paper);padding:7px 14px;border-radius:999px;opacity:0;transition:.35s;pointer-events:none;z-index:60}
   .save.show{opacity:1;transform:translateX(-50%) translateY(0)}
-  .fab{position:fixed;right:18px;bottom:calc(var(--tabh) + env(safe-area-inset-bottom) + 14px);width:52px;height:52px;border-radius:50%;background:var(--accent);color:#fff;border:none;font-size:28px;line-height:1;cursor:pointer;z-index:25;box-shadow:0 4px 16px rgba(182,69,42,.40);display:flex;align-items:center;justify-content:center;transition:transform .12s;-webkit-tap-highlight-color:transparent}
+  .fab-wrap{position:fixed;right:18px;bottom:calc(var(--tabh) + env(safe-area-inset-bottom) + 14px);z-index:25;display:flex;flex-direction:column;align-items:flex-end;gap:10px}
+  .fab-wrap.hidden{display:none}
+  .fab-items{display:flex;flex-direction:column;align-items:flex-end;gap:8px;pointer-events:none;opacity:0;transform:translateY(8px);transition:opacity .18s,transform .18s}
+  .fab-wrap.open .fab-items{pointer-events:auto;opacity:1;transform:translateY(0)}
+  .fab-item{display:flex;align-items:center;gap:9px;cursor:pointer;-webkit-tap-highlight-color:transparent}
+  .fab-item-label{background:var(--ink);color:var(--paper);font-family:var(--ui);font-weight:600;font-size:13px;padding:6px 12px;border-radius:999px;white-space:nowrap;box-shadow:0 2px 8px rgba(0,0,0,.22)}
+  .fab-item-btn{width:42px;height:42px;border-radius:50%;border:none;color:#fff;font-size:20px;cursor:pointer;display:flex;align-items:center;justify-content:center;box-shadow:0 2px 10px rgba(0,0,0,.22);flex-shrink:0}
+  .fab-item-btn.accent{background:var(--accent)}
+  .fab-item-btn.ink{background:var(--ink)}
+  .fab{width:52px;height:52px;border-radius:50%;background:var(--accent);color:#fff;border:none;font-size:28px;line-height:1;cursor:pointer;box-shadow:0 4px 16px rgba(182,69,42,.40);display:flex;align-items:center;justify-content:center;transition:transform .18s;-webkit-tap-highlight-color:transparent;flex-shrink:0}
   .fab:active{transform:scale(.9)}
-  .fab.hidden{display:none}
+  .fab-wrap.open .fab{transform:rotate(45deg)}
+  .fab-backdrop{position:fixed;inset:0;z-index:24;display:none}
+  .fab-backdrop.show{display:block}
 </style>
 
 <div class="wrap">
@@ -294,7 +305,33 @@
   </div>
 </div>
 
-<button class="fab hidden" id="fabAdd" aria-label="Add today">+</button>
+<!-- ADD DATE SHEET -->
+<div class="sheet-bg" id="addDateSheet">
+  <div class="sheet">
+    <h2>Add a date</h2>
+    <p style="font-size:13px;color:var(--ink-soft);margin:0 0 14px;line-height:1.5">Pick a date to open or create a log entry for it.</p>
+    <input type="date" id="addDateInput" style="width:100%;font-family:var(--mono);font-size:15px;border:1px solid var(--line);border-radius:10px;padding:10px 12px;background:var(--card);color:var(--ink);margin-bottom:14px">
+    <div class="row">
+      <button class="primary" id="addDateDo">Go to date</button>
+      <button class="ghost" id="addDateClose">Cancel</button>
+    </div>
+  </div>
+</div>
+
+<div class="fab-backdrop" id="fabBackdrop"></div>
+<div class="fab-wrap hidden" id="fabWrap">
+  <div class="fab-items">
+    <div class="fab-item" id="fabItemDate">
+      <span class="fab-item-label">Add a date</span>
+      <button class="fab-item-btn ink" aria-label="Add a date">📅</button>
+    </div>
+    <div class="fab-item" id="fabItemSpend">
+      <span class="fab-item-label">Add spending</span>
+      <button class="fab-item-btn accent" aria-label="Add spending">✏️</button>
+    </div>
+  </div>
+  <button class="fab" id="fabAdd" aria-label="Add">+</button>
+</div>
 <div class="save" id="saveToast">saved ✓</div>
 
 <script>
@@ -576,8 +613,8 @@ function renderLog(){document.getElementById('mlabel').textContent=fmtMonth(sel)
   if(tagFilter){const ts=tagSettings(tagFilter);
     document.getElementById('tagCapInput').value=ts.limit!=null?ts.limit:'';}
   logDerived();renderTagFilters();
-  if(tagFilter){renderFilteredDays(tagFilter);document.getElementById('addDay').style.display='none';document.getElementById('fabAdd').classList.add('hidden');}
-  else{renderDays();document.getElementById('addDay').style.display='';document.getElementById('fabAdd').classList.remove('hidden');}}
+  if(tagFilter){renderFilteredDays(tagFilter);document.getElementById('addDay').style.display='none';document.getElementById('fabWrap').classList.add('hidden');}
+  else{renderDays();document.getElementById('addDay').style.display='';document.getElementById('fabWrap').classList.remove('hidden');}}
 
 document.getElementById('capInput').addEventListener('input',e=>{const v=parseFloat(e.target.value);
   state.budget=isNaN(v)?null:v;updateGauge();save();});
@@ -591,19 +628,39 @@ document.getElementById('seg').addEventListener('click',e=>{const b=e.target.clo
 document.getElementById('addDay').onclick=()=>{const today=todayISO();
   const date=today.slice(0,7)===sel?today:sel+'-01';state.days.push({id:uid(),date,raw:''});renderDays();logDerived();save();
   const t=document.querySelector('#days textarea');if(t)t.focus();};
-document.getElementById('fabAdd').onclick=()=>{
-  const today=todayISO(),todayYM=today.slice(0,7);
-  let needRender=false;
-  if(sel!==todayYM||tagFilter){sel=todayYM;tagFilter=null;needRender=true;}
-  if(!state.days.find(d=>d.date===today)){state.days.push({id:uid(),date:today,raw:''});needRender=true;save();}
-  if(needRender)renderLog();
+/* --- FAB speed-dial --- */
+function closeFab(){document.getElementById('fabWrap').classList.remove('open');document.getElementById('fabBackdrop').classList.remove('show');}
+function openFab(){document.getElementById('fabWrap').classList.add('open');document.getElementById('fabBackdrop').classList.add('show');}
+document.getElementById('fabAdd').onclick=e=>{e.stopPropagation();const wrap=document.getElementById('fabWrap');wrap.classList.contains('open')?closeFab():openFab();};
+document.getElementById('fabBackdrop').onclick=closeFab;
+
+function goToDate(date){
+  const ym=date.slice(0,7);
+  if(sel!==ym||tagFilter){sel=ym;tagFilter=null;renderLog();}
+  if(!state.days.find(d=>d.date===date)){state.days.push({id:uid(),date,raw:''});renderLog();save();}
   requestAnimationFrame(()=>{
-    const card=document.querySelector(`#days [data-date="${today}"]`);if(!card)return;
+    const card=document.querySelector(`#days [data-date="${date}"]`);if(!card)return;
     const hdr=document.querySelector('#view-log header');
     const y=card.getBoundingClientRect().top+window.scrollY-(hdr?hdr.offsetHeight:0)-8;
     window.scrollTo({top:Math.max(0,y),behavior:'smooth'});
-    const ta=card.querySelector('textarea');if(ta)ta.focus();});
-};
+    const ta=card.querySelector('textarea');if(ta)ta.focus();});}
+
+document.getElementById('fabItemSpend').onclick=()=>{
+  closeFab();
+  goToDate(todayISO());};
+
+document.getElementById('fabItemDate').onclick=()=>{
+  closeFab();
+  const inp=document.getElementById('addDateInput');
+  inp.value=todayISO();
+  document.getElementById('addDateSheet').classList.add('show');};
+document.getElementById('addDateClose').onclick=()=>document.getElementById('addDateSheet').classList.remove('show');
+document.getElementById('addDateSheet').addEventListener('click',e=>{if(e.target===document.getElementById('addDateSheet'))document.getElementById('addDateSheet').classList.remove('show');});
+document.getElementById('addDateDo').onclick=()=>{
+  const v=document.getElementById('addDateInput').value;
+  if(!v)return;
+  document.getElementById('addDateSheet').classList.remove('show');
+  goToDate(v);};
 
 /* ---------- BALANCES ---------- */
 /* net income (in) minus spending (out) ever logged against this account, across
@@ -718,7 +775,8 @@ document.getElementById('recurSheetClose').onclick=()=>document.getElementById('
 function showTab(name){tab=name;
   document.querySelectorAll('.view').forEach(v=>v.classList.toggle('on',v.id==='view-'+name));
   document.querySelectorAll('.tabbar .t').forEach(b=>b.classList.toggle('on',b.dataset.tab===name));
-  if(name!=='log')document.getElementById('fabAdd').classList.add('hidden');
+  if(name!=='log'){document.getElementById('fabWrap').classList.add('hidden');closeFab();}
+  else if(!tagFilter)document.getElementById('fabWrap').classList.remove('hidden');
   if(name==='log')renderLog();else if(name==='balances')renderBalances();else renderHistory();
   window.scrollTo(0,0);}
 document.querySelectorAll('.tabbar .t').forEach(b=>b.onclick=()=>showTab(b.dataset.tab));
