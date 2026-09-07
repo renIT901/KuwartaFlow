@@ -159,6 +159,28 @@
   .ghost{background:transparent;border:1px solid var(--line);border-radius:10px;padding:11px;font-weight:600;font-family:var(--ui);font-size:14px;cursor:pointer;color:var(--ink)}
   .modal{background:var(--paper);width:100%;max-width:360px;border-radius:16px;padding:20px;margin:auto;box-shadow:0 12px 40px rgba(0,0,0,.3);align-self:center}
   .modal p{font-size:14.5px;line-height:1.5;margin:0 0 16px}
+
+  /* quick-log sheet */
+  .ql-amount-row{display:flex;align-items:center;gap:6px;margin-bottom:12px}
+  .ql-currency{font-family:var(--mono);font-weight:600;font-size:28px;color:var(--ink-soft)}
+  .ql-amount{flex:1;font-family:var(--mono);font-weight:600;font-size:32px;border:none;border-bottom:2.5px solid var(--line);background:transparent;color:var(--ink);padding:4px 0;min-width:0;outline:none}
+  .ql-amount:focus{border-color:var(--accent)}
+  .ql-desc{width:100%;font-family:var(--ui);font-size:15px;border:none;border-bottom:1.5px solid var(--line);background:transparent;color:var(--ink);padding:6px 0;margin-bottom:14px;outline:none}
+  .ql-desc:focus{border-color:var(--accent)}
+  .ql-lbl{font-family:var(--mono);font-size:10px;text-transform:uppercase;letter-spacing:.12em;color:var(--ink-soft);margin:10px 0 6px}
+  .ql-pills{display:flex;flex-wrap:wrap;gap:6px;margin-bottom:4px}
+  .ql-pill{font-family:var(--mono);font-size:12px;padding:6px 13px;border-radius:999px;border:1.5px solid var(--line);background:var(--card);cursor:pointer;color:var(--ink);transition:background .12s,color .12s,border-color .12s;-webkit-tap-highlight-color:transparent}
+  .ql-pill.on{color:#fff;border-color:transparent}
+  .ql-newtag{font-family:var(--mono);font-size:12px;padding:5px 10px;border-radius:999px;border:1.5px dashed var(--line);background:transparent;color:var(--ink-soft);cursor:pointer;-webkit-tap-highlight-color:transparent}
+  .ql-taginput{font-family:var(--mono);font-size:12px;border:1.5px solid var(--accent);border-radius:999px;padding:5px 10px;background:var(--card);color:var(--ink);outline:none;width:90px}
+  .ql-toggle-row{display:flex;align-items:center;gap:10px;margin:12px 0 2px}
+  .ql-toggle{position:relative;width:38px;height:22px;flex-shrink:0}
+  .ql-toggle input{opacity:0;width:0;height:0;position:absolute}
+  .ql-track{position:absolute;inset:0;background:var(--line);border-radius:999px;transition:.2s;cursor:pointer}
+  .ql-toggle input:checked+.ql-track{background:var(--good)}
+  .ql-track:before{content:'';position:absolute;width:16px;height:16px;left:3px;top:3px;background:#fff;border-radius:50%;transition:.2s}
+  .ql-toggle input:checked+.ql-track:before{transform:translateX(16px)}
+  .ql-toggle-lbl{font-family:var(--ui);font-size:13.5px;color:var(--ink)}
   .save{position:fixed;left:50%;bottom:calc(var(--tabh) + env(safe-area-inset-bottom) + 14px);transform:translateX(-50%) translateY(20px);
     font-family:var(--mono);font-size:11px;background:var(--ink);color:var(--paper);padding:7px 14px;border-radius:999px;opacity:0;transition:.35s;pointer-events:none;z-index:60}
   .save.show{opacity:1;transform:translateX(-50%) translateY(0)}
@@ -301,6 +323,30 @@
     <div class="row" style="margin-top:8px">
       <button class="primary" id="impDo">Restore</button>
       <button class="ghost" id="impClose">Close</button>
+    </div>
+  </div>
+</div>
+
+<!-- QUICK LOG SHEET -->
+<div class="sheet-bg" id="quickLogSheet">
+  <div class="sheet">
+    <h2>Log spending</h2>
+    <div class="ql-amount-row">
+      <span class="ql-currency">₱</span>
+      <input class="ql-amount" id="qlAmt" type="number" inputmode="decimal" min="0" placeholder="0" autocomplete="off">
+    </div>
+    <input class="ql-desc" id="qlDesc" type="text" placeholder="what did you spend on?" autocomplete="off">
+    <div class="ql-lbl">Method</div>
+    <div class="ql-pills" id="qlMethods"></div>
+    <div class="ql-lbl">Tags</div>
+    <div class="ql-pills" id="qlTags"></div>
+    <div class="ql-toggle-row">
+      <label class="ql-toggle"><input type="checkbox" id="qlIncome"><span class="ql-track"></span></label>
+      <span class="ql-toggle-lbl">This is income / money in</span>
+    </div>
+    <div class="row" style="margin-top:16px">
+      <button class="primary" id="qlDo">Log it</button>
+      <button class="ghost" id="qlClose">Cancel</button>
     </div>
   </div>
 </div>
@@ -645,9 +691,86 @@ function goToDate(date){
     window.scrollTo({top:Math.max(0,y),behavior:'smooth'});
     const ta=card.querySelector('textarea');if(ta)ta.focus();});}
 
-document.getElementById('fabItemSpend').onclick=()=>{
+/* --- quick-log sheet --- */
+let qlSelectedMethod=null, qlSelectedTags=new Set();
+
+function allUsedTags(){
+  const s=new Set();
+  state.days.forEach(d=>computeDay(d.raw).entries.forEach(e=>(e.tags||[]).forEach(t=>s.add(t))));
+  state.tags.forEach(t=>s.add(t.name));
+  return [...s].filter(Boolean).sort();
+}
+
+function openQuickLog(){
   closeFab();
-  goToDate(todayISO());};
+  qlSelectedMethod=null;qlSelectedTags=new Set();
+  document.getElementById('qlAmt').value='';
+  document.getElementById('qlDesc').value='';
+  document.getElementById('qlIncome').checked=false;
+
+  /* method pills */
+  const mHost=document.getElementById('qlMethods');mHost.innerHTML='';
+  state.accounts.forEach(a=>{
+    const p=document.createElement('button');p.className='ql-pill';p.textContent=a.name;
+    p.style.setProperty('--mc',a.color);
+    p.onclick=()=>{qlSelectedMethod=qlSelectedMethod===a?null:a;
+      mHost.querySelectorAll('.ql-pill').forEach(x=>x.classList.remove('on'));
+      if(qlSelectedMethod){p.classList.add('on');p.style.background=a.color;}};
+    mHost.appendChild(p);});
+
+  /* tag pills */
+  const tHost=document.getElementById('qlTags');tHost.innerHTML='';
+  function addTagPill(tag){
+    const p=document.createElement('button');p.className='ql-pill';p.textContent='#'+tag;
+    p.onclick=()=>{if(qlSelectedTags.has(tag)){qlSelectedTags.delete(tag);p.classList.remove('on');p.style.background='';}
+      else{qlSelectedTags.add(tag);p.classList.add('on');p.style.background='var(--tag)';p.style.borderColor='transparent';}};
+    tHost.appendChild(p);}
+  allUsedTags().forEach(addTagPill);
+  const addTagBtn=document.createElement('button');addTagBtn.className='ql-newtag';addTagBtn.textContent='+ tag';
+  addTagBtn.onclick=()=>{
+    addTagBtn.style.display='none';
+    const inp=document.createElement('input');inp.className='ql-taginput';inp.placeholder='tag';inp.maxLength=20;
+    tHost.insertBefore(inp,addTagBtn);inp.focus();
+    const commit=()=>{const v=inp.value.trim().toLowerCase().replace(/^#/,'').replace(/\s+/g,'');
+      if(v&&!qlSelectedTags.has(v)){addTagPill(v);tHost.querySelector('.ql-pill:last-of-type').click();}
+      inp.remove();addTagBtn.style.display='';};
+    inp.addEventListener('keydown',e=>{if(e.key==='Enter'||e.key===','){e.preventDefault();commit();}if(e.key==='Escape')inp.remove();});
+    inp.addEventListener('blur',commit);};
+  tHost.appendChild(addTagBtn);
+
+  document.getElementById('quickLogSheet').classList.add('show');
+  requestAnimationFrame(()=>document.getElementById('qlAmt').focus());}
+
+function closeQuickLog(){document.getElementById('quickLogSheet').classList.remove('show');}
+
+document.getElementById('fabItemSpend').onclick=openQuickLog;
+document.getElementById('qlClose').onclick=closeQuickLog;
+document.getElementById('quickLogSheet').addEventListener('click',e=>{if(e.target===document.getElementById('quickLogSheet'))closeQuickLog();});
+
+document.getElementById('qlDo').onclick=()=>{
+  const amt=parseFloat(document.getElementById('qlAmt').value);
+  if(!amt||amt<=0)return;
+  const desc=(document.getElementById('qlDesc').value||'').trim();
+  const isIncome=document.getElementById('qlIncome').checked;
+  const methodKw=qlSelectedMethod?(qlSelectedMethod.keywords[0]||qlSelectedMethod.name.toLowerCase()):'';
+  const tagStr=[...qlSelectedTags].map(t=>'#'+t).join(' ');
+  const parts=[isIncome?'+'+amt:String(amt),desc,methodKw,tagStr].filter(Boolean);
+  const line=parts.join(' ');
+
+  const today=todayISO();
+  let day=state.days.find(d=>d.date===today);
+  if(!day){day={id:uid(),date:today,raw:''};state.days.push(day);}
+  day.raw=(day.raw&&day.raw.trim()?day.raw.trim()+'\n':'')+line;
+  save();closeQuickLog();
+
+  const todayYM=today.slice(0,7);
+  if(sel!==todayYM||tagFilter){sel=todayYM;tagFilter=null;}
+  renderLog();
+  requestAnimationFrame(()=>{
+    const card=document.querySelector(`#days [data-date="${today}"]`);if(!card)return;
+    const hdr=document.querySelector('#view-log header');
+    const y=card.getBoundingClientRect().top+window.scrollY-(hdr?hdr.offsetHeight:0)-8;
+    window.scrollTo({top:Math.max(0,y),behavior:'smooth'});});};
 
 document.getElementById('fabItemDate').onclick=()=>{
   closeFab();
